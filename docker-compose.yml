@@ -1,0 +1,88 @@
+version: "3.8"
+services:
+  mlflow-postgres:
+    image: postgres:13
+    container_name: mlflow-metadata-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=mlflow_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - common_network
+    ports:
+      - "5432:5432"
+
+  mlflow:
+    build: 
+      context: ./mlflow_server
+    image: yemoncad/mlflow_covertype-mlflow:1.0.2
+    container_name: mlflow_server
+    restart: always
+    environment:
+      - BACKEND_URI=postgresql+psycopg2://postgres:postgres@mlflow-postgres/mlflow_db
+      - ARTIFACT_ROOT=s3://mlflow3/artifacts
+      - AWS_ACCESS_KEY_ID=<AWS_ACCESS_KEY_ID>
+      - AWS_SECRET_ACCESS_KEY=<AWS_ACCESS_KEY>
+    networks:
+      - common_network
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mlflow-postgres
+
+  load-data:
+    build:
+      context: ./database
+    image: yemoncad/mlflow_covertype-load-data:1.0.2
+    container_name: load-data
+    depends_on:
+      - mlflow-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_SERVER=mlflow-postgres
+      - POSTGRES_DB=covertype_data
+    ports:
+      - '8502:8502'
+    networks:
+      - common_network
+  
+  experiments:
+    build: 
+      context: ./experiments
+    image: yemoncad/mlflow_covertype-experiments:1.0.4
+    container_name: jupyterlab_server
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_SERVER=mlflow-postgres
+      - POSTGRES_DB=covertype_data
+    restart: always
+    ports:
+      - "8888:8888"
+    networks:
+      - common_network
+
+  app:
+    build: 
+      context: ./app
+    image: yemoncad/mlflow_covertype-app:1.0.3
+    container_name: app_streamlit
+    restart: always
+    environment:
+      - AWS_ACCESS_KEY_ID=<AWS_ACCESS_KEY_ID>
+      - AWS_SECRET_ACCESS_KEY=<AWS_ACCESS_KEY>
+    ports:
+      - '8506:8506'
+    networks:
+      - common_network
+
+volumes:
+  postgres_data: {}
+  minio_data: {}
+
+networks:
+  common_network:
+    driver: bridge

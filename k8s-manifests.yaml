@@ -1,0 +1,344 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlflow-covertype
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-credentials
+  namespace: mlflow-covertype
+data:
+  AWS_ACCESS_KEY_ID: admin
+  AWS_SECRET_ACCESS_KEY: supersecret
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-postgres
+  namespace: mlflow-covertype
+spec:
+  selector:
+    app: mlflow-postgres
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+
+---
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mlflow-postgres
+  namespace: mlflow-covertype
+  labels:
+    app: mlflow-postgres
+spec:
+  containers:
+  - name: mlflow-metadata-db
+    image: postgres:13
+    env:
+    - name: POSTGRES_USER
+      value: postgres
+    - name: POSTGRES_PASSWORD
+      value: postgres
+    - name: POSTGRES_DB
+      value: mlflow_db
+    ports:
+    - containerPort: 5432
+    volumeMounts:
+    - mountPath: /var/lib/postgresql/data
+      name: postgres-data
+  volumes:
+  - name: postgres-data
+    persistentVolumeClaim:
+      claimName: postgres-data
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: mlflow-covertype
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: mlflow-covertype
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: minio-api
+      protocol: TCP
+      port: 9000
+      targetPort: 9000
+    - name: minio-console
+      protocol: TCP
+      port: 9001
+      targetPort: 9001
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: mlflow-covertype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio
+        args:
+        - server
+        - --console-address
+        - ":9001"
+        - /data
+        env:
+        - name: MINIO_ROOT_USER
+          value: admin
+        - name: MINIO_ROOT_PASSWORD
+          value: supersecret
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        volumeMounts:
+        - mountPath: /data
+          name: minio-data
+      volumes:
+      - name: minio-data
+        persistentVolumeClaim:
+          claimName: minio-data
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: mlflow-covertype
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+# Aquí comienza el despliegue de mlflow
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: mlflow-covertype
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlflow-covertype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+      - name: mlflow-server
+        image: yemoncad/mlflow_covertype-mlflow:1.0.0
+        env:
+        - name: BACKEND_URI
+          value: postgresql+psycopg2://postgres:postgres@mlflow-postgres:5432/mlflow_db
+        - name: ARTIFACT_ROOT
+          value: s3://mlflow/artifacts
+        - name: MLFLOW_S3_ENDPOINT_URL
+          value: http://minio:9000
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            configMapKeyRef:
+              name: aws-credentials
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: aws-credentials
+              key: AWS_SECRET_ACCESS_KEY
+        ports:
+        - containerPort: 5000
+
+# Aquí comienza el despliegue de load-data
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: load-data
+  namespace: mlflow-covertype
+spec:
+  selector:
+    app: load-data
+  ports:
+    - protocol: TCP
+      port: 8502
+      targetPort: 8502
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-data
+  namespace: mlflow-covertype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-data
+  template:
+    metadata:
+      labels:
+        app: load-data
+    spec:
+      containers:
+      - name: load-data
+        image: yemoncad/mlflow_covertype-load-data:1.0.0
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: postgres
+        - name: POSTGRES_SERVER
+          value: mlflow-postgres
+        - name: POSTGRES_DB
+          value: covertype_data
+        ports:
+        - containerPort: 8502
+
+
+# Aquí comienza el despliegue de experiments
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: experiments
+  namespace: mlflow-covertype
+spec:
+  selector:
+    app: experiments
+  ports:
+    - protocol: TCP
+      port: 8888
+      targetPort: 8888
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: experiments
+  namespace: mlflow-covertype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: experiments
+  template:
+    metadata:
+      labels:
+        app: experiments
+    spec:
+      containers:
+      - name: jupyterlab-server
+        image: yemoncad/mlflow_covertype-experiments:1.0.0
+
+# Aquí comienza el despliegue de app
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: mlflow-covertype
+spec:
+  selector:
+    app: app
+  ports:
+    - name: app-port
+      protocol: TCP
+      port: 8506
+      targetPort: 8506
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: mlflow-covertype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+      - name: app-streamlit
+        image: yemoncad/mlflow_covertype-app:1.0.0
+        env:
+        - name: MLFLOW_S3_ENDPOINT_URL
+          value: http://minio:9000
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            configMapKeyRef:
+              name: aws-credentials
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: aws-credentials
+              key: AWS_SECRET_ACCESS_KEY
+        ports:
+        - containerPort: 8506
